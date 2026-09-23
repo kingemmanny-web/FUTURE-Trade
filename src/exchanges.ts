@@ -3,7 +3,9 @@ export type MarketSnapshot = { price: number; change: number; high: number; low:
 
 const binanceBase = (marketType: string) => marketType === 'Futures' ? 'https://fapi.binance.com' : 'https://api.binance.com'
 
-const mexcBase = (marketType: string) => marketType === 'Futures' ? 'https://contract.mexc.com' : 'https://api.mexc.com'
+const mexcBase = (marketType: string, path: string, query: string) => import.meta.env.DEV
+  ? `${marketType === 'Futures' ? '/api/mexc-futures' : '/api/mexc'}${path}?${query}`
+  : `/api/mexc?market=${marketType === 'Futures' ? 'futures' : 'spot'}&path=${encodeURIComponent(path)}&${query}`
 
 const mexcSymbol = (symbol: string, marketType: string) => marketType === 'Futures' ? `${symbol.slice(0, -4)}_USDT` : symbol
 
@@ -30,7 +32,7 @@ const parseOkxCandles = (payload: any): Candle[] => (payload?.data || []).revers
 export async function fetchExchangeCandles(exchange: string, marketType: string, symbol: string, interval: string, limit: number): Promise<Candle[]> {
   if (exchange === 'MEXC') {
     const apiInterval = marketType === 'Futures' ? mexcFuturesInterval(interval) : interval
-    const response = await fetch(`${mexcBase(marketType)}${marketType === 'Futures' ? `/api/v1/contract/kline/${mexcSymbol(symbol, marketType)}` : '/api/v3/klines'}?${marketType === 'Futures' ? `interval=${apiInterval}&limit=${limit}` : `symbol=${symbol}&interval=${interval}&limit=${limit}`}`)
+    const response = await fetch(mexcBase(marketType, marketType === 'Futures' ? `/api/v1/contract/kline/${mexcSymbol(symbol, marketType)}` : '/api/v3/klines', marketType === 'Futures' ? `interval=${apiInterval}&limit=${limit}` : `symbol=${symbol}&interval=${interval}&limit=${limit}`))
     if (!response.ok) throw new Error('MEXC candle request failed')
     return parseMexcCandles(await response.json())
   }
@@ -55,12 +57,12 @@ export async function fetchExchangeCandles(exchange: string, marketType: string,
 export async function fetchExchangeSnapshot(exchange: string, marketType: string, symbol: string): Promise<{ snapshot: MarketSnapshot; candles: Candle[] }> {
   if (exchange === 'MEXC') {
     const apiSymbol = mexcSymbol(symbol, marketType)
-    const tickerResponse = await fetch(`${mexcBase(marketType)}${marketType === 'Futures' ? `/api/v1/contract/ticker?symbol=${apiSymbol}` : `/api/v3/ticker/24hr?symbol=${apiSymbol}`}`)
+    const tickerResponse = await fetch(mexcBase(marketType, marketType === 'Futures' ? '/api/v1/contract/ticker' : '/api/v3/ticker/24hr', `symbol=${apiSymbol}`))
     const candlePromise = fetchExchangeCandles(exchange, marketType, symbol, '5m', 48)
     if (!tickerResponse.ok) throw new Error('MEXC ticker request failed')
     const tickerPayload = await tickerResponse.json()
     const ticker = tickerPayload?.data ?? tickerPayload
-    const fundingPromise = marketType === 'Futures' ? fetch(`${mexcBase(marketType)}/api/v1/contract/funding_rate/${apiSymbol}`) : Promise.resolve(null)
+    const fundingPromise = marketType === 'Futures' ? fetch(mexcBase(marketType, `/api/v1/contract/funding_rate/${apiSymbol}`, '')) : Promise.resolve(null)
     const [candles, fundingResponse] = await Promise.all([candlePromise, fundingPromise])
     const fundingPayload = fundingResponse && fundingResponse.ok ? await fundingResponse.json() : null
     const funding = fundingPayload?.data?.fundingRate ?? fundingPayload?.fundingRate
