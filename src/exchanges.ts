@@ -1,15 +1,15 @@
 export type Candle = { open: number; high: number; low: number; close: number }
 export type MarketSnapshot = { price: number; change: number; high: number; low: number; volume: number; funding?: number }
 
-const binanceBase = (marketType: string) => marketType === 'Futures' ? '/api/binance-futures' : '/api/binance-spot'
+const binanceBase = (marketType: string) => marketType === 'Futures' ? 'https://fapi.binance.com' : 'https://api.binance.com'
 
-const mexcBase = (marketType: string) => marketType === 'Futures' ? '/api/mexc-futures' : '/api/mexc'
+const mexcBase = (marketType: string) => marketType === 'Futures' ? 'https://contract.mexc.com' : 'https://api.mexc.com'
 
 const mexcSymbol = (symbol: string, marketType: string) => marketType === 'Futures' ? `${symbol.slice(0, -4)}_USDT` : symbol
 
 const mexcFuturesInterval = (interval: string) => ({ '1m': 'Min1', '5m': 'Min5', '15m': 'Min15', '30m': 'Min30', '1h': 'Min60', '2h': 'Min120', '4h': 'Hour4', '8h': 'Hour8', '12h': 'Hour12', '1d': 'Day1' }[interval] || interval)
-const bybitBase = '/api/bybit'
-const okxBase = '/api/okx'
+const bybitBase = 'https://api.bybit.com'
+const okxBase = 'https://www.okx.com'
 const bybitCategory = (marketType: string) => marketType === 'Futures' ? 'linear' : 'spot'
 const bybitInterval = (interval: string) => ({ '1d': 'D', '12h': '720', '8h': '480', '6h': '360', '4h': '240', '2h': '120', '1h': '60', '30m': '30', '15m': '15', '5m': '5', '3m': '3', '1m': '1' }[interval] || interval)
 const okxInstrument = (symbol: string, marketType: string) => marketType === 'Futures' ? `${symbol.slice(0, -4)}-USDT-SWAP` : `${symbol.slice(0, -4)}-USDT`
