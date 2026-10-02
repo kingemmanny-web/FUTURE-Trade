@@ -15,6 +15,8 @@ export default defineConfig({
       '/api/bybit': { target: 'https://api.bybit.com', changeOrigin: true, rewrite: (path) => path.replace(/^\/api\/bybit/, '') },
       '/api/okx': { target: 'https://www.okx.com', changeOrigin: true, rewrite: (path) => path.replace(/^\/api\/okx/, '') },
       '/api/cryptocompare': { target: 'https://min-api.cryptocompare.com', changeOrigin: true, rewrite: (path) => path.replace(/^\/api\/cryptocompare/, '') },
+      '/api/rss2json': { target: 'https://api.rss2json.com', changeOrigin: true, rewrite: (path) => path.replace(/^\/api\/rss2json/, '') },
+      '/api/coingecko': { target: 'https://api.coingecko.com', changeOrigin: true, rewrite: (path) => path.replace(/^\/api\/coingecko/, '') },
     },
   },
 })

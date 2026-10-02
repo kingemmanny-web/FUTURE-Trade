@@ -6,7 +6,9 @@ type FeedConfig = { source: string; tag: string; color: NewsItem['color']; url: 
 
 const feeds: FeedConfig[] = [
   { source: 'CoinDesk', tag: 'COINDESK', color: 'blue', url: 'https://www.coindesk.com/arc/outboundfeeds/rss/' },
-  { source: 'CoinMarketCap', tag: 'CMC', color: 'orange', url: 'https://coinmarketcap.com/headlines/news/' },
+  { source: 'CNBC Markets', tag: 'CNBC', color: 'orange', url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html' },
+  { source: 'Yahoo Finance', tag: 'YAHOO', color: 'blue', url: 'https://finance.yahoo.com/news/rssindex' },
+  { source: 'CNBC Business', tag: 'BUSINESS', color: 'green', url: 'https://www.cnbc.com/id/10001147/device/rss/rss.html' },
   { source: 'Decrypt', tag: 'DECRYPT', color: 'green', url: 'https://decrypt.co/feed' },
 ]
 
@@ -30,29 +32,18 @@ export function useLiveNews(initial: NewsItem[] = fallbackNews): [NewsItem[], (i
     let cancelled = false
     const loadFeeds = async () => {
       const results = await Promise.allSettled(feeds.map(async (feed) => {
-        try {
-          const response = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}`)
-          if (!response.ok) throw new Error(`${feed.source} feed unavailable`)
-          const payload = await response.json()
-          const items = Array.isArray(payload?.items) ? payload.items : []
-          return items.slice(0, 8).map((item: { title?: string; pubDate?: string; link?: string }) => ({
-            tag: feed.tag,
-            title: String(item.title || 'Crypto market update'),
-            time: relativeTime(String(item.pubDate || '')),
-            color: feed.color,
-            link: item.link,
-            publishedAt: Date.parse(String(item.pubDate || '')) || 0,
-          }))
-        } catch {
-          return [{
-            tag: feed.tag,
-            title: `${feed.source} market snapshot is temporarily unavailable`,
-            time: 'LIVE',
-            color: feed.color,
-            link: feed.url,
-            publishedAt: Date.now(),
-          }]
-        }
+        const response = await fetch(`/api/rss2json/v1/api.json?rss_url=${encodeURIComponent(feed.url)}`)
+        if (!response.ok) throw new Error(`${feed.source} feed unavailable`)
+        const payload = await response.json()
+        const items = Array.isArray(payload?.items) ? payload.items : []
+        return items.slice(0, 8).map((item: { title?: string; pubDate?: string; link?: string }) => ({
+          tag: feed.tag,
+          title: String(item.title || 'Crypto market update'),
+          time: relativeTime(String(item.pubDate || '')),
+          color: feed.color,
+          link: item.link,
+          publishedAt: Date.parse(String(item.pubDate || '')) || 0,
+        }))
       }))
       const merged = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []).sort((left, right) => right.publishedAt - left.publishedAt).slice(0, 15).map(({ publishedAt: _publishedAt, ...item }) => item)
       if (!cancelled && merged.length) setNews(merged)

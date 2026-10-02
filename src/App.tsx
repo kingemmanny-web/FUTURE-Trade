@@ -1,22 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 import { useLiveNews } from './news'
-import { fetchExchangeCandles, fetchExchangeSnapshot } from './exchanges'
+import { fetchExchangeSnapshot, type Candle, type MarketSnapshot } from './exchanges'
 
-const navItems = ['Dashboard', 'Analysis history', 'Market', 'Watchlist', 'Settings']
-const timeframes = ['1D', '12H', '8H', '6H', '4H', '3H', '2H', '1H', '30M', '15M', '10M', '5M', '3M', '1M', 'CUSTOM']
-const intervals: Record<string, string> = { '1D': '1d', '12H': '12h', '8H': '8h', '6H': '6h', '4H': '4h', '3H': '4h', '2H': '2h', '1H': '1h', '30M': '30m', '15M': '15m', '10M': '15m', '5M': '5m', '3M': '5m', '1M': '1m', CUSTOM: '15m' }
-type Candle = { open: number; high: number; low: number; close: number }
-type Snapshot = { price: number; change: number; high: number; low: number; volume: number; funding?: number }
-type Plan = { entryLow: number; entryHigh: number; stop: number; tp1: number; tp2: number; rr: number; direction: 'LONG' | 'SHORT' }
-type Ticker = { symbol: string; price: number; change: number; high: number; low: number; volume: number }
-type HistoryItem = { id: string; pair: string; exchange: string; marketType: string; timeframe: string; createdAt: string; uploaded: number; plan: Plan | null }
 type News = { tag: string; title: string; time: string; color: 'blue' | 'orange' | 'green' }
-const defaultNews: News[] = [
-  { tag: 'BUSINESS', title: 'Banks and funds keep a close eye on the next rate decision as crypto spreads widen', time: '18 min ago', color: 'blue' },
-  { tag: 'STOCK', title: 'Equity indexes stabilize while traders watch growth and inflation signals', time: '1h ago', color: 'orange' },
-  { tag: 'CRYPTO', title: 'Bitcoin and major alts absorb volatility as market breadth improves', time: '3h ago', color: 'green' },
-]
+type ChartData = { width: number; height: number; x: (index: number) => number; y: (value: number) => number; candleWidth: number; ticks: number[] }
+
+const intervals: Record<string, string> = { '1M': '1m', '3M': '3m', '5M': '5m' }
 const hotList = [
   { pair: 'BTC/USDT', change: '+3.42%', volume: '$14.2B' },
   { pair: 'ETH/USDT', change: '+2.18%', volume: '$9.8B' },
@@ -25,96 +15,130 @@ const hotList = [
   { pair: 'XRP/USDT', change: '+4.03%', volume: '$1.7B' },
   { pair: 'DOGE/USDT', change: '+6.74%', volume: '$1.3B' },
 ]
-const formatPrice = (value?: number) => { if (value === undefined || !Number.isFinite(value)) return '—'; const [whole, fraction] = Number(value.toPrecision(15)).toString().split('.'); return `$${Number(whole).toLocaleString()}${fraction ? `.${fraction}` : ''}` }
-const formatVolume = (value?: number) => value === undefined ? '—' : `$${(value / 1e9).toFixed(2)}B`
-const symbolLabel = (symbol: string) => symbol.replace('USDT', '/USDT')
-const binanceTickerBase = (marketType: string) => marketType === 'Futures' ? '/api/binance-futures/fapi/v1/ticker/24hr?symbol=' : '/api/binance-spot/api/v3/ticker/24hr?symbol='
-const fallbackTickerData = [
-  { symbol: 'BTCUSDT', price: 64250.12, change: 2.14, high: 64890.00, low: 63120.00, volume: 15400000000 },
-  { symbol: 'ETHUSDT', price: 3450.88, change: 1.68, high: 3510.40, low: 3380.20, volume: 9700000000 },
-  { symbol: 'SOLUSDT', price: 154.72, change: 3.52, high: 158.64, low: 147.91, volume: 4200000000 },
-  { symbol: 'BNBUSDT', price: 598.96, change: 1.22, high: 610.50, low: 586.70, volume: 1500000000 },
-  { symbol: 'XRPUSDT', price: 0.6121, change: 2.78, high: 0.6255, low: 0.5942, volume: 1270000000 },
-  { symbol: 'ADAUSDT', price: 0.6814, change: 1.94, high: 0.6968, low: 0.6655, volume: 880000000 },
+const defaultNews: News[] = [
+  { tag: 'BUSINESS', title: 'Business and markets headlines are loading', time: 'WAITING', color: 'blue' },
+  { tag: 'STOCKS', title: 'Stock-market headlines are loading', time: 'WAITING', color: 'orange' },
+  { tag: 'CRYPTO', title: 'Crypto headlines are loading', time: 'WAITING', color: 'green' },
 ]
-const normalizePair = (value: string) => {
-  const cleaned = value.trim().toUpperCase().replace(/\s+/g, '')
-  if (!cleaned) return ''
-  if (cleaned.includes('/')) return cleaned
-  if (cleaned.endsWith('USDT')) return `${cleaned.slice(0, -4)}/USDT`
-  return `${cleaned}/USDT`
+
+function formatPrice(value?: number) {
+  if (value === undefined || !Number.isFinite(value)) return '—'
+  const absolute = Math.abs(value)
+  const digits = absolute >= 100 ? 2 : absolute >= 1 ? 4 : absolute >= 0.01 ? 6 : 10
+  return `$${value.toLocaleString(undefined, { maximumFractionDigits: digits })}`
 }
 
 function App() {
-  const [activeNav, setActiveNav] = useState('Dashboard')
   const [pair, setPair] = useState('BTC/USDT')
+  const [pairInput, setPairInput] = useState('BTC/USDT')
   const [exchange, setExchange] = useState('Binance')
   const [marketType, setMarketType] = useState('Futures')
   const [timeframe, setTimeframe] = useState('5M')
-  const [files, setFiles] = useState<Record<string, string>>({})
-  const [market, setMarket] = useState<Snapshot | null>(null)
+  const [market, setMarket] = useState<MarketSnapshot | null>(null)
   const [candles, setCandles] = useState<Candle[]>([])
-  const [marketError, setMarketError] = useState(false)
-  const [plan, setPlan] = useState<Plan | null>(null)
-  const [analyzing, setAnalyzing] = useState(false)
-  const [analyzed, setAnalyzed] = useState(false)
-  const [news, setNews] = useLiveNews(defaultNews)
-  const [showAllNews, setShowAllNews] = useState(true)
-  const [watchlist, setWatchlist] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('atlas-watchlist') || '["BTC/USDT", "ETH/USDT", "SOL/USDT"]') } catch { return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'] } })
-  const [history, setHistory] = useState<HistoryItem[]>(() => { try { return JSON.parse(localStorage.getItem('atlas-analysis-history') || '[]') } catch { return [] } })
-  const [compactMode, setCompactMode] = useState(false)
-  const [autoRefresh, setAutoRefresh] = useState(true)
-  const [searchHistory, setSearchHistory] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('atlas-search-history') || '["BTC/USDT","ETH/USDT","SOL/USDT"]') } catch { return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'] } })
-  const inputRefs = useRef<Record<string, HTMLInputElement | null>>({})
-  const uploaded = Object.keys(files).length
+  const [candleSource, setCandleSource] = useState('')
+  const [candleInterval, setCandleInterval] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('atlas-search-history') || '["BTC/USDT","ETH/USDT","SOL/USDT"]') }
+    catch { return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'] }
+  })
+  const [news] = useLiveNews(defaultNews)
 
-  useEffect(() => { localStorage.setItem('atlas-analysis-history', JSON.stringify(history)); const card = document.querySelector('.news-card'); if (!card) return; const visibleNews = showAllNews ? news : news.slice(0, 3); const handleClick = (event: Event) => { const item = (event.target as HTMLElement).closest('.news-item'); if (!item) return; const index = Array.from(card.querySelectorAll('.news-item')).indexOf(item); const article = visibleNews[index] as { link?: string } | undefined; if (article?.link) window.open(article.link, '_blank', 'noopener,noreferrer') }; card.addEventListener('click', handleClick); return () => card.removeEventListener('click', handleClick) }, [history, news, showAllNews])
-  useEffect(() => { localStorage.setItem('atlas-watchlist', JSON.stringify(watchlist)) }, [watchlist])
   useEffect(() => { localStorage.setItem('atlas-search-history', JSON.stringify(searchHistory)) }, [searchHistory])
-  useEffect(() => { const exchangeSelect = document.querySelector('.asset-toolbar select'); if (!exchangeSelect || exchangeSelect.querySelector('option[value="MEXC"]')) return; const option = document.createElement('option'); option.value = 'MEXC'; option.textContent = 'MEXC'; exchangeSelect.append(option) }, [])
+
   useEffect(() => {
-    const loadNews = async () => { try { const response = await fetch('/api/cryptocompare/data/v2/news/?lang=EN'); if (!response.ok) throw new Error(); const payload = await response.json(); const mapped = (payload.Data || []).slice(0, 5).map((item: any, index: number) => ({ tag: String(item.source_info?.name || item.source || 'MARKET').toUpperCase().slice(0, 8), title: String(item.title || 'Market update'), time: `${Math.max(1, Math.round((Date.now() / 1000 - Number(item.published_on || 0)) / 60))} min ago`, color: index % 3 === 0 ? 'blue' : index % 3 === 1 ? 'orange' : 'green' })); setNews(mapped.length ? mapped : defaultNews) } catch { setNews(defaultNews) } }
-    loadNews(); const timer = window.setInterval(loadNews, 60000); return () => window.clearInterval(timer)
-  }, [])
-  useEffect(() => {
-    const symbol = pair.replace('/', '').trim().toUpperCase(); if (!symbol) return
     let cancelled = false
-    const loadMarket = async () => { try { const result = await fetchExchangeSnapshot(exchange, marketType, symbol); if (cancelled) return; setMarket(result.snapshot); setCandles(result.candles); setMarketError(false) } catch { if (!cancelled) { const fallback = fallbackTickerData.find((item) => item.symbol === symbol || item.symbol === `${symbol}USDT`) || fallbackTickerData[0]; setMarket({ price: fallback.price, change: fallback.change, high: fallback.high, low: fallback.low, volume: fallback.volume }); setCandles(createFallbackCandles(fallback.price)); setMarketError(true) } } }
-    loadMarket(); const timer = autoRefresh ? window.setInterval(loadMarket, 60000) : undefined; return () => { cancelled = true; if (timer) window.clearInterval(timer) }
-  }, [autoRefresh, exchange, pair, marketType])
+    const symbol = pair.toUpperCase().replaceAll('/', '').trim()
+    setLoading(true)
+    setMarket(null)
+    setCandles([])
+    setCandleSource('')
+    setCandleInterval('')
+    const load = async () => {
+      try {
+        const result = await fetchExchangeSnapshot(exchange, marketType, symbol, intervals[timeframe])
+        if (cancelled) return
+        setMarket(result.snapshot)
+        setCandles(result.candles)
+        setCandleSource(result.candleSource)
+        setCandleInterval(result.candleInterval)
+      } catch {
+        if (!cancelled) {
+          setMarket(null)
+          setCandles([])
+          setCandleSource('')
+          setCandleInterval('')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    const timer = window.setInterval(load, 60000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [exchange, marketType, pair, timeframe])
 
-  const chart = candles.length ? (() => { const width = 720, height = 220, padding = 14, values = candles.flatMap((candle) => [candle.high, candle.low]), max = Math.max(...values), min = Math.min(...values), range = max - min || 1; return { width, height, x: (index: number) => padding + index * (width - padding * 2) / Math.max(candles.length - 1, 1), y: (value: number) => height - padding - (value - min) / range * (height - padding * 2), candleWidth: Math.max(3, (width - padding * 2) / candles.length * .58) } })() : null
-  const handleFile = (name: string, file?: File) => { if (!file?.type.startsWith('image/')) return; const reader = new FileReader(); reader.onload = () => setFiles((current) => ({ ...current, [name]: String(reader.result) })); reader.readAsDataURL(file) }
-  const removeFile = (name: string) => setFiles((current) => { const next = { ...current }; delete next[name]; return next })
-  const createSnapshot = (items: Candle[]) => { const width = 520, height = 180, lows = items.map((item) => item.low), highs = items.map((item) => item.high), min = Math.min(...lows), max = Math.max(...highs), range = max - min || 1, y = (value: number) => height - 10 - (value - min) / range * (height - 20), bodyWidth = Math.max(3, (width - 20) / items.length * .55); const svg = items.map((item, index) => { const x = 10 + index * (width - 20) / Math.max(items.length - 1, 1), color = item.close >= item.open ? '#39d69f' : '#e06c75'; return `<g stroke="${color}" fill="${color}"><line x1="${x}" x2="${x}" y1="${y(item.high)}" y2="${y(item.low)}"/><rect x="${x - bodyWidth / 2}" y="${Math.min(y(item.open), y(item.close))}" width="${bodyWidth}" height="${Math.max(1.5, Math.abs(y(item.open) - y(item.close)))}"/></g>` }).join(''); return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#171b21"/>${svg}</svg>`)}` }
-  const createFallbackCandles = (basePrice: number) => Array.from({ length: 32 }, (_, index) => { const drift = (index - 16) * 0.008; const open = basePrice * (1 + drift * 0.2); const close = basePrice * (1 + drift + (index % 5 - 2) * 0.003); const high = Math.max(open, close) * 1.01; const low = Math.min(open, close) * 0.99; return { open, high, low, close } })
-  const buildPlan = (items: Candle[], currentPrice: number): Plan | null => { if (items.length < 12 || currentPrice <= 0) return null; const recent = items.slice(-12), low = Math.min(...recent.map((item) => item.low)), high = Math.max(...recent.map((item) => item.high)), direction = recent[recent.length - 1].close >= recent[0].open ? 'LONG' : 'SHORT', buffer = Math.max((high - low) * .08, currentPrice * .001); if (direction === 'LONG') { const stop = low - buffer, tp1 = currentPrice + currentPrice - stop, tp2 = currentPrice + (currentPrice - stop) * 2; return { entryLow: Math.max(low, currentPrice - (high - low) * .25), entryHigh: currentPrice, stop, tp1, tp2, rr: (tp2 - currentPrice) / (currentPrice - stop), direction } } const stop = high + buffer, tp1 = currentPrice - stop + currentPrice, tp2 = currentPrice - (stop - currentPrice) * 2; return { entryLow: currentPrice, entryHigh: Math.min(high, currentPrice + (high - low) * .25), stop, tp1, tp2, rr: (currentPrice - tp2) / (stop - currentPrice), direction } }
-  const runAnalysis = async () => { setAnalyzing(true); setAnalyzed(false); const symbol = pair.replace('/', '').trim().toUpperCase(); try { const snapshots = await Promise.all(timeframes.map(async (name) => [name, createSnapshot(await fetchExchangeCandles(exchange, marketType, symbol, intervals[name], 36))] as const)); setFiles((current) => Object.fromEntries(snapshots.map(([name, snapshot]) => [name, current[name] || snapshot]))); const nextPlan = buildPlan(candles, market?.price || 0); setPlan(nextPlan); setHistory((current) => [{ id: `${Date.now()}`, pair, exchange, marketType, timeframe, createdAt: new Date().toISOString(), uploaded: snapshots.length, plan: nextPlan }, ...current].slice(0, 25)) } catch { setMarketError(true) } window.setTimeout(() => { setAnalyzing(false); setAnalyzed(true) }, 1200) }
-  const rememberSearch = (nextValue: string) => {
-    const normalized = normalizePair(nextValue)
-    if (!normalized) return
-    setSearchHistory((current) => [normalized, ...current.filter((item) => item !== normalized)].slice(0, 8))
+  const selectPair = (value: string) => {
+    const cleaned = value.trim().toUpperCase().replace(/\s+/g, '')
+    if (!cleaned) return
+    const normalized = cleaned.includes('/') ? cleaned : cleaned.endsWith('USDT') ? `${cleaned.slice(0, -4)}/USDT` : `${cleaned}/USDT`
+    setPairInput(normalized)
     setPair(normalized)
-  }
-  const openSymbol = (symbol: string) => {
-    const pairValue = `${symbol.replace('USDT', '')}/USDT`
-    rememberSearch(pairValue)
-    setActiveNav('Dashboard')
+    setSearchHistory((current) => [normalized, ...current.filter((item) => item !== normalized)].slice(0, 12))
   }
 
-  return <div className={`app-shell ${compactMode ? 'compact' : ''}`}><Sidebar activeNav={activeNav} setActiveNav={setActiveNav} /><main className="main-content"><header className="topbar"><div><span className="eyebrow">{activeNav.toUpperCase()}</span><h1>{activeNav === 'Dashboard' ? 'Market analysis' : activeNav}</h1></div><div className="top-actions"><span className="demo-pill"><span className="live-dot" /> DEMO DATA</span><button className="icon-button" aria-label="Notifications">♧<span className="notification-dot" /></button>{activeNav === 'Dashboard' && <button className="run-button" onClick={runAnalysis}>Run analysis <span>↗</span></button>}</div></header>{activeNav === 'Dashboard' && <Dashboard {...{ pair, setPair, exchange, setExchange, marketType, setMarketType, timeframe, setTimeframe, market, candles, chart, marketError, files, inputRefs, uploaded, handleFile, removeFile, runAnalysis, analyzing, analyzed, plan, news, showAllNews, setShowAllNews, formatPrice, formatVolume, searchHistory, rememberSearch }} />}{activeNav === 'Analysis history' && <HistoryView history={history} formatPrice={formatPrice} onOpenDashboard={() => setActiveNav('Dashboard')} />}{activeNav === 'Market' && <MarketView marketType={marketType} compactMode={compactMode} onOpen={openSymbol} />}{activeNav === 'Watchlist' && <WatchlistView watchlist={watchlist} setWatchlist={setWatchlist} marketType={marketType} compactMode={compactMode} onOpen={openSymbol} />}{activeNav === 'Settings' && <SettingsView compactMode={compactMode} setCompactMode={setCompactMode} autoRefresh={autoRefresh} setAutoRefresh={setAutoRefresh} historyCount={history.length} watchlistCount={watchlist.length} onClearHistory={() => setHistory([])} />}<footer>Ghoxt TERMINAL <span>•</span> Analysis is for information only. No trades are executed by this application.</footer></main></div>
+  const chart: ChartData | null = candles.length ? (() => {
+    const width = 920
+    const height = 360
+    const left = 86
+    const right = 16
+    const top = 18
+    const bottom = 28
+    const values = candles.flatMap((candle) => [candle.high, candle.low])
+    const max = Math.max(...values)
+    const min = Math.min(...values)
+    const range = max - min || Math.abs(max) * 0.001 || 1
+    const plotWidth = width - left - right
+    const plotHeight = height - top - bottom
+    return {
+      width,
+      height,
+      x: (index) => left + index * plotWidth / Math.max(candles.length - 1, 1),
+      y: (value) => top + (max - value) / range * plotHeight,
+      candleWidth: Math.max(2, Math.min(14, plotWidth / candles.length * 0.62)),
+      ticks: Array.from({ length: 5 }, (_, index) => max - range * index / 4),
+    }
+  })() : null
+
+  return <div className="app-shell">
+    <aside className="sidebar"><div className="brand"><span className="brand-mark">◒</span><span>Ghoxt<span className="brand-sub">/ terminal</span></span></div><div className="workspace-label">MARKETS</div><div className="status-line"><span className="live-dot" /> PUBLIC DATA</div></aside>
+    <main className="main-content">
+      <header className="topbar"><div><span className="eyebrow">MARKET TERMINAL</span><h1>Live market chart</h1></div><span className="demo-pill"><span className="live-dot" /> LIVE FEED</span></header>
+
+      <section className="asset-toolbar panel">
+        <div className="asset-search"><label>TRADING PAIR</label><input list="pair-search-history" value={pairInput} aria-label="Trading pair" onChange={(event) => setPairInput(event.target.value.toUpperCase())} onBlur={() => selectPair(pairInput)} onKeyDown={(event) => { if (event.key === 'Enter') selectPair(pairInput) }} /><datalist id="pair-search-history">{searchHistory.map((item) => <option key={item} value={item} />)}</datalist></div>
+        <div className="select-wrap"><label>EXCHANGE</label><select value={exchange} onChange={(event) => setExchange(event.target.value)}><option>Binance</option><option>Bybit</option><option>OKX</option><option>MEXC</option></select></div>
+        <div className="mode-switch"><button className={marketType === 'Futures' ? 'selected' : ''} onClick={() => setMarketType('Futures')}>Futures</button><button className={marketType === 'Spot' ? 'selected' : ''} onClick={() => setMarketType('Spot')}>Spot</button></div>
+        <div className="select-wrap"><label>TIMEFRAME</label><select value={timeframe} onChange={(event) => setTimeframe(event.target.value)}><option>1M</option><option>3M</option><option>5M</option></select></div>
+      </section>
+
+      <section className="hotlist-bar panel"><div className="section-heading hotlist-header"><div><span className="section-kicker">BINANCE</span><h2>HOT LIST</h2></div><span className="upload-count">TRENDING · 24H</span></div><div className="hotlist-row">{hotList.map((item) => <button key={item.pair} type="button" className="hotlist-item" onClick={() => selectPair(item.pair)}><strong>{item.pair}</strong><span className="hotlist-change">{item.change}</span><small>{item.volume}</small></button>)}</div></section>
+
+      <section className="market-strip"><div className="market-primary"><div><strong>{pair}</strong><span className="muted">{market?.source || `${exchange} ${marketType}`}</span></div><span className={market ? 'status-badge' : 'status-badge unavailable'}>● {market ? 'LIVE' : loading ? 'LOADING' : 'OFFLINE'}</span></div>{[['LAST PRICE', formatPrice(market?.price)], ['24H HIGH', formatPrice(market?.high)], ['24H LOW', formatPrice(market?.low)], ['24H CHANGE', market ? `${market.change >= 0 ? '+' : ''}${market.change.toFixed(2)}%` : '—'], ['VOLUME', market ? `$${(market.volume / 1e9).toFixed(2)}B` : '—']].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}</section>
+
+      <section className="live-chart panel"><div className="chart-header"><div><span className="section-kicker">{pair} · {candleInterval || timeframe} CANDLES</span><h2>{market ? formatPrice(market.price) : loading ? 'Loading market data' : 'No market data'}</h2></div><span className="chart-source">{(candleSource || market?.source || exchange).toUpperCase()}</span></div>
+        {chart && candles.length ? <svg className="candlestick-chart" viewBox={`0 0 ${chart.width} ${chart.height}`} preserveAspectRatio="none" role="img" aria-label={`${pair} ${candleInterval || timeframe} candlestick chart`}>
+          {chart.ticks.map((tick, index) => <g key={`axis-${index}`}><line className="grid-line" x1="78" x2={chart.width - 8} y1={chart.y(tick)} y2={chart.y(tick)} /><text className="chart-price-label" x="3" y={chart.y(tick) + 4}>{formatPrice(tick)}</text></g>)}
+          {candles.map((candle, index) => { const x = chart.x(index); const openY = chart.y(candle.open); const closeY = chart.y(candle.close); const rising = candle.close >= candle.open; return <g key={`${index}-${candle.open}`} className={rising ? 'candle bullish' : 'candle bearish'}><line x1={x} x2={x} y1={chart.y(candle.high)} y2={chart.y(candle.low)} /><rect x={x - chart.candleWidth / 2} y={Math.min(openY, closeY)} width={chart.candleWidth} height={Math.max(2, Math.abs(openY - closeY))} /></g> })}
+  </svg> : <div className="chart-empty">{loading ? 'Loading real OHLC candles…' : 'Candlestick data is unavailable for this pair.'}</div>}
+        <div className="chart-axis"><span>{candles.length} candles</span><span>{candleInterval || timeframe}</span><span>Source: {candleSource || market?.source || exchange}</span></div>
+      </section>
+
+      <section className="panel news-card"><div className="card-title"><span>BREAKING NEWS</span></div><div className="news-subtitle">MAJOR BUSINESS, STOCK &amp; CRYPTO PLATFORMS</div>{news.slice(0, 8).map((item, index) => <article className="news-item" key={`${item.title}-${index}`}><span className={`news-bullet ${item.color}`} /><div><span className="news-meta">{item.tag} · {item.time}</span><strong>{item.title}</strong></div></article>)}</section>
+      <footer>Ghoxt TERMINAL <span>•</span> Market data is provided by public exchange feeds and may be delayed.</footer>
+    </main>
+  </div>
 }
-
-function Sidebar({ activeNav, setActiveNav }: { activeNav: string; setActiveNav: (value: string) => void }) { const [menuOpen, setMenuOpen] = useState(false); const chooseNav = (value: string) => { setActiveNav(value); setMenuOpen(false) }; return <aside className={`sidebar ${menuOpen ? 'menu-open' : ''}`}><div className="brand"><span className="brand-mark">◒</span><span>Ghoxt<span className="brand-sub">/ terminal</span></span><button className="mobile-menu-button" aria-label={menuOpen ? 'Close navigation menu' : 'Open navigation menu'} aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>{menuOpen ? '×' : '☰'}</button></div><div className="workspace-label">WORKSPACE</div><nav>{navItems.map((item, index) => <button key={item} className={activeNav === item ? 'nav-item active' : 'nav-item'} onClick={() => chooseNav(item)}><span className="nav-icon">{['▦', '◷', '⌁', '☆', '⚙'][index]}</span><span className="nav-label">{item}</span><span className="nav-arrow">{activeNav === item ? '›' : ''}</span></button>)}</nav><div className="sidebar-bottom"><div className="status-line"><span className="live-dot" /> SYSTEMS OPERATIONAL</div><div className="user-row"><span className="avatar">GE</span><span><strong>Gbohunmi Emmanuel</strong><small>Pro workspace</small></span><span className="more">•••</span></div></div></aside> }
-
-function MarketView({ marketType, compactMode, onOpen }: { marketType: string; compactMode: boolean; onOpen: (symbol: string) => void }) { const [tickers, setTickers] = useState<Ticker[]>([]); useEffect(() => { let cancelled = false; const load = async () => { try { const symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']; const values = await Promise.all(symbols.map(async (symbol) => { const response = await fetch(`${binanceTickerBase(marketType)}${symbol}`); if (!response.ok) throw new Error('Ticker request failed'); const data = await response.json(); return { symbol, price: Number(data.lastPrice), change: Number(data.priceChangePercent), high: Number(data.highPrice), low: Number(data.lowPrice), volume: Number(data.quoteVolume) } })); if (!cancelled) setTickers(values) } catch { if (!cancelled) setTickers(fallbackTickerData.map((item) => ({ symbol: item.symbol, price: item.price, change: item.change, high: item.high, low: item.low, volume: item.volume }))) } }; load(); const timer = window.setInterval(load, 60000); return () => { cancelled = true; window.clearInterval(timer) } }, [marketType]); return <section className={`module-view ${compactMode ? 'compact' : ''}`}><div className="section-heading"><div><span className="section-kicker">LIVE DATA</span><h2>Crypto market</h2></div><span className="upload-count">{marketType.toUpperCase()} · {tickers.length} TRACKED</span></div><div className="market-table panel"><div className="market-table-head"><span>SYMBOL</span><span>LAST PRICE</span><span>24H CHANGE</span><span>24H RANGE</span><span>VOLUME</span><span /></div>{tickers.map((ticker) => <button className="market-table-row" key={ticker.symbol} onClick={() => onOpen(ticker.symbol)}><strong>{symbolLabel(ticker.symbol)}</strong><span>{formatPrice(ticker.price)}</span><span className={ticker.change >= 0 ? 'positive' : 'negative'}>{ticker.change >= 0 ? '+' : ''}{ticker.change.toFixed(2)}%</span><span>{formatPrice(ticker.low)} - {formatPrice(ticker.high)}</span><span>{formatVolume(ticker.volume)}</span><span>Open →</span></button>)}</div>{!tickers.length && <div className="empty-view panel"><h2>Market data unavailable</h2><p>Check your connection and try again.</p></div>}</section> }
-
-function WatchlistView({ watchlist, setWatchlist, marketType, compactMode, onOpen }: { watchlist: string[]; setWatchlist: (value: string[]) => void; marketType: string; compactMode: boolean; onOpen: (symbol: string) => void }) { const [newSymbol, setNewSymbol] = useState(''); const [tickers, setTickers] = useState<Ticker[]>([]); useEffect(() => { let cancelled = false; const load = async () => { try { const values = await Promise.all(watchlist.map(async (item) => { const symbol = item.replace('/', ''); const response = await fetch(`${binanceTickerBase(marketType)}${symbol}`); if (!response.ok) throw new Error('Watchlist request failed'); const data = await response.json(); return { symbol, price: Number(data.lastPrice), change: Number(data.priceChangePercent), high: Number(data.highPrice), low: Number(data.lowPrice), volume: Number(data.quoteVolume) } })); if (!cancelled) setTickers(values) } catch { if (!cancelled) setTickers(fallbackTickerData.filter((item) => watchlist.some((watchItem) => watchItem.includes(item.symbol.replace('USDT', '')) || item.symbol === watchItem.replace('/', ''))).map((item) => ({ symbol: item.symbol, price: item.price, change: item.change, high: item.high, low: item.low, volume: item.volume }))) } }; load(); return () => { cancelled = true } }, [marketType, watchlist]); const add = () => { const normalized = newSymbol.replace('/', '').trim().toUpperCase(); if (!/^[A-Z0-9]{6,12}$/.test(normalized)) return; const item = symbolLabel(normalized); if (!watchlist.includes(item)) setWatchlist([...watchlist, item]); setNewSymbol('') }; return <section className={`module-view ${compactMode ? 'compact' : ''}`}><div className="section-heading"><div><span className="section-kicker">PERSONAL LIST</span><h2>Watchlist</h2></div><span className="upload-count">{watchlist.length} SYMBOLS</span></div><section className="watchlist-add panel"><input value={newSymbol} onChange={(event) => setNewSymbol(event.target.value.toUpperCase())} onKeyDown={(event) => { if (event.key === 'Enter') add() }} placeholder="Add symbol, e.g. ETHUSDT" /><button className="analyze-button" onClick={add}>Add symbol <span>＋</span></button></section><div className="watchlist-grid">{tickers.map((ticker) => <article className="watchlist-card panel" key={ticker.symbol}><div><span className="section-kicker">BINANCE</span><h3>{symbolLabel(ticker.symbol)}</h3></div><strong>{formatPrice(ticker.price)}</strong><span className={ticker.change >= 0 ? 'positive' : 'negative'}>{ticker.change >= 0 ? '+' : ''}{ticker.change.toFixed(2)}%</span><div><button className="text-button primary" onClick={() => onOpen(ticker.symbol)}>Analyze →</button><button className="text-button" onClick={() => setWatchlist(watchlist.filter((item) => item !== symbolLabel(ticker.symbol)))}>Remove</button></div></article>)}</div>{!watchlist.length && <div className="empty-view panel"><h2>Your watchlist is empty</h2><p>Add a Binance symbol above to track it here.</p></div>}</section> }
-
-function SettingsView({ compactMode, setCompactMode, autoRefresh, setAutoRefresh, historyCount, watchlistCount, onClearHistory }: { compactMode: boolean; setCompactMode: (value: boolean) => void; autoRefresh: boolean; setAutoRefresh: (value: boolean) => void; historyCount: number; watchlistCount: number; onClearHistory: () => void }) { return <section className="module-view"><div className="section-heading"><div><span className="section-kicker">WORKSPACE</span><h2>Settings</h2></div></div><div className="settings-grid"><section className="panel settings-card"><span className="section-kicker">DISPLAY</span><h3>Interface preferences</h3><label className="setting-row"><span><strong>Compact layout</strong><small>Fit more market rows on screen.</small></span><input type="checkbox" checked={compactMode} onChange={(event) => setCompactMode(event.target.checked)} /></label><label className="setting-row"><span><strong>Automatic refresh</strong><small>Refresh market prices every minute.</small></span><input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} /></label></section><section className="panel settings-card"><span className="section-kicker">DATA</span><h3>Workspace data</h3><div className="setting-stat"><span>Saved analyses</span><strong>{historyCount}</strong></div><div className="setting-stat"><span>Watchlist symbols</span><strong>{watchlistCount}</strong></div><button className="text-button danger" onClick={onClearHistory}>Clear analysis history</button></section></div></section> }
-
-function HistoryView({ history, formatPrice, onOpenDashboard }: { history: HistoryItem[]; formatPrice: (value?: number) => string; onOpenDashboard: () => void }) { return <section className="history-view"><div className="section-heading"><div><span className="section-kicker">ARCHIVE</span><h2>Documented analyses</h2></div><span className="upload-count">{history.length} SAVED</span></div>{history.length === 0 ? <div className="empty-view panel"><h2>No analyses documented yet</h2><p>Completed analysis runs will appear here automatically.</p><button className="analyze-button" onClick={onOpenDashboard}>Open dashboard →</button></div> : <div className="history-list">{history.map((item) => <article className="history-row" key={item.id}><div><strong>{item.pair}</strong><span>{item.exchange} · {item.marketType} · {item.timeframe} execution</span></div><div><span>{new Date(item.createdAt).toLocaleString()}</span><strong>{item.uploaded}/15 charts</strong></div><div className={item.plan?.direction === 'SHORT' ? 'history-direction short-bias' : 'history-direction'}>{item.plan?.direction || 'NO TRADE'}</div>{item.plan && <div className="history-levels"><span>Entry {formatPrice(item.plan.entryLow)} - {formatPrice(item.plan.entryHigh)}</span><span>SL {formatPrice(item.plan.stop)}</span><span>TP2 {formatPrice(item.plan.tp2)}</span></div>}</article>)}</div>}</section> }
-
-function Dashboard(props: any) { const { pair, setPair, exchange, setExchange, marketType, setMarketType, timeframe, setTimeframe, market, candles, chart, marketError, files, inputRefs, uploaded, handleFile, removeFile, runAnalysis, analyzing, analyzed, plan, news, showAllNews, setShowAllNews, searchHistory, rememberSearch } = props; return <><section className="asset-toolbar panel"><div className="asset-mode"><label>MARKET</label><strong>CRYPTO</strong></div><div className="asset-search"><label>ASSET</label><span className="coin-icon">₿</span><input list="asset-search-history" value={pair} onChange={(event) => setPair(event.target.value.toUpperCase())} onBlur={() => rememberSearch(pair)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); rememberSearch(pair) } }} aria-label="Trading pair" /><datalist id="asset-search-history">{searchHistory.map((item: string) => <option key={item} value={item} />)}</datalist><span className="search-icon">⌕</span></div><div className="select-wrap"><label>EXCHANGE</label><select value={exchange} onChange={(event) => setExchange(event.target.value)}><option>Binance</option><option>Bybit</option><option>OKX</option></select></div><div className="mode-switch"><button className={marketType === 'Futures' ? 'selected' : ''} onClick={() => setMarketType('Futures')}>Futures</button><button className={marketType === 'Spot' ? 'selected' : ''} onClick={() => setMarketType('Spot')}>Spot</button></div><div className="select-wrap execution-select"><label>EXECUTION TIMEFRAME</label><select value={timeframe} onChange={(event) => setTimeframe(event.target.value)}><option>5M</option><option>3M</option><option>1M</option></select></div><div className="asset-price"><span className="muted">BTC DOMINANCE</span><strong>54.8%</strong><span className="positive">+0.42%</span></div></section><section className="hotlist-bar panel"><div className="section-heading hotlist-header"><div><span className="section-kicker">BINANCE</span><h2>HOT LIST</h2></div><span className="upload-count">TRENDING · 24H</span></div><div className="hotlist-row">{hotList.map((item) => <button key={item.pair} type="button" className="hotlist-item" onClick={() => rememberSearch(item.pair)}><strong>{item.pair}</strong><span className="hotlist-change">{item.change}</span><small>{item.volume}</small></button>)}</div></section><section className="market-strip"><div className="market-primary"><span className="coin-icon large">₿</span><div><strong>{pair}</strong><span className="muted">{marketError ? 'Market data unavailable' : 'Binance market feed'}</span></div><span className={market ? 'status-badge' : 'status-badge unavailable'}>● {market ? 'LIVE' : 'OFFLINE'}</span></div>{[['LAST PRICE', formatPrice(market?.price)], ['24H HIGH', formatPrice(market?.high)], ['24H LOW', formatPrice(market?.low)], ['VOLUME (24H)', formatVolume(market?.volume)], ['FUNDING', market?.funding === undefined ? '—' : `${market.funding.toFixed(4)}%`]].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong>{label === 'LAST PRICE' && <em className={market && market.change >= 0 ? 'positive' : 'negative'}>{market ? `${market.change >= 0 ? '+' : ''}${market.change.toFixed(2)}%` : '—'}</em>}</div>)}</section><section className="live-chart panel"><div className="chart-header"><div><span className="section-kicker">LIVE PRICE ACTION · {timeframe}</span><h2>{market ? formatPrice(market.price) : 'Waiting for Binance data'}</h2></div><span className="chart-source">BINANCE {marketType.toUpperCase()} · AUTO REFRESH 1M</span></div>{chart ? <svg className="candlestick-chart" viewBox={`0 0 ${chart.width} ${chart.height}`} role="img" aria-label={`${pair} live candlestick chart`}>{[0, 1, 2, 3].map((line) => <line key={line} x1="0" x2={chart.width} y1={20 + line * 57} y2={20 + line * 57} className="grid-line" />)}{candles.map((candle: Candle, index: number) => { const bullish = candle.close >= candle.open, x = chart.x(index); return <g key={`${candle.open}-${index}`} className={bullish ? 'candle bullish' : 'candle bearish'}><line x1={x} x2={x} y1={chart.y(candle.high)} y2={chart.y(candle.low)} /><rect x={x - chart.candleWidth / 2} y={Math.min(chart.y(candle.open), chart.y(candle.close))} width={chart.candleWidth} height={Math.max(1.5, Math.abs(chart.y(candle.open) - chart.y(candle.close)))} /></g> })}</svg> : <div className="chart-empty">{marketError ? 'Market data temporarily unavailable.' : 'Loading live candlesticks...'}</div>}<div className="chart-axis"><span>48 candles</span><span>{timeframe} execution view</span><span>Source: Binance public API</span></div></section><section className="analysis-cta"><div><span className="section-kicker">SYNTHESIS ENGINE</span><strong>{uploaded ? `${uploaded} chart${uploaded === 1 ? '' : 's'} loaded` : 'Ready for chart analysis'}</strong><small>Upload charts or run live Binance analysis to begin</small></div><button className="analyze-button" onClick={runAnalysis}>{analyzing ? 'Analyzing...' : 'Run analysis →'}</button></section><section className="upload-grid">{timeframes.map((name: string) => <div key={name} className={files[name] ? 'upload-card has-file' : 'upload-card'} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); handleFile(name, event.dataTransfer.files[0]) }}><input ref={(element: HTMLInputElement | null) => { inputRefs.current[name] = element }} type="file" accept="image/*" onChange={(event) => handleFile(name, event.target.files?.[0])} /><div className="upload-card-top"><span className="timeframe">{name}</span>{files[name] ? <button className="remove-file" onClick={() => removeFile(name)}>×</button> : <span className="empty-indicator">—</span>}</div>{files[name] ? <img className="chart-preview" src={files[name]} alt={`${name} chart preview`} /> : <button className="drop-target" onClick={() => inputRefs.current[name]?.click()}><span>＋</span><small>Drop chart or click</small></button>}<div className="upload-card-footer"><span>{files[name] ? 'READY TO ANALYZE' : name === 'CUSTOM' ? 'OPTIONAL' : 'AWAITING IMAGE'}</span></div></div>)}</section><div className="content-grid"><aside className="right-column"><section className="panel news-card"><div className="card-title"><span>BREAKING NEWS</span><button className="text-button primary" onClick={() => setShowAllNews((current: boolean) => !current)}>{showAllNews ? 'Hide all' : 'View all'} →</button></div><div className="news-subtitle">MAJOR BUSINESS, STOCK &amp; CRYPTO PLATFORMS</div>{(showAllNews ? news : news.slice(0, 3)).map((item: News) => <div className="news-item" key={`${item.tag}-${item.title}`}><span className={`news-bullet ${item.color}`} /><div><span className="news-meta">{item.tag} · {item.time}</span><strong>{item.title}</strong></div></div>)}</section></aside></div>{(analyzed || analyzing) && <section className="result-section"><div className="section-heading"><div><span className="section-kicker">TRADE PLAN</span><h2>{analyzing ? 'Building your analysis' : 'Analysis result'}</h2></div></div>{analyzing ? <div className="progress-panel"><div className="loader-line" /><span>Comparing supplied timeframes and calculating confluence...</span></div> : plan ? <div className="trade-card"><span className="section-kicker">PRIMARY BIAS · {timeframe} EXECUTION</span><h3 className={plan.direction === 'SHORT' ? 'short-bias' : ''}>{plan.direction} {plan.direction === 'LONG' ? '↗' : '↘'}</h3><div className="entry-label">ENTRY ZONE</div><strong className="entry-value">{formatPrice(plan.entryLow)} - {formatPrice(plan.entryHigh)}</strong><div className="trade-levels"><div><span>STOP LOSS</span><strong>{formatPrice(plan.stop)}</strong></div><div><span>TP1</span><strong>{formatPrice(plan.tp1)}</strong></div><div><span>TP2</span><strong>{formatPrice(plan.tp2)}</strong></div><div><span>RISK / REWARD</span><strong>1 : {plan.rr.toFixed(2)}</strong></div></div></div> : <div className="empty-view panel"><h2>Not enough market data</h2><p>Check the symbol and try again.</p></div>}</section>}</> }
 
 export default App

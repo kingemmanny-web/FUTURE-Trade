@@ -20,6 +20,8 @@ const routes: Route[] = [
   { prefix: 'bybit', target: 'https://api.bybit.com' },
   { prefix: 'okx', target: 'https://www.okx.com' },
   { prefix: 'cryptocompare', target: 'https://min-api.cryptocompare.com' },
+  { prefix: 'rss2json', target: 'https://api.rss2json.com' },
+  { prefix: 'coingecko', target: 'https://api.coingecko.com' },
 ]
 
 export default async function handler(request: VercelRequest, response: VercelResponse) {
